@@ -1,0 +1,58 @@
+name: Frontend CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Check kubectl connection
+      run: |
+        kubectl cluster-info --request-timeout=10s
+        echo "✅ Kubernetes connection verified"
+    
+    - name: Apply Kubernetes manifests
+      run: |
+        echo "📦 Applying Frontend Kubernetes manifests..."
+        
+        # Apply all k8s files
+        kubectl apply -f k8s/service.yaml
+        kubectl apply -f k8s/deployment.yaml
+        kubectl apply -f k8s/hpa.yaml
+        kubectl apply -f k8s/network-policies.yaml
+        kubectl apply -f k8s/nodeport.yaml
+        
+        echo "✅ All Kubernetes manifests applied"
+    
+    - name: Verify deployment
+      run: |
+        echo "🔍 Verifying frontend deployment..."
+        
+        # Check pod status
+        kubectl get pods -n bedrock-chat-v2 -l app=frontend
+        
+        # Check services
+        kubectl get svc -n bedrock-chat-v2 frontend
+        kubectl get svc -n bedrock-chat-v2 frontend-nodeport
+        
+        # Check HPA
+        kubectl get hpa -n bedrock-chat-v2 frontend-hpa
+        
+        echo "✅ Frontend deployment verification completed"
+    
+    - name: Deployment Summary
+      run: |
+        echo "🎉 Frontend CD Pipeline completed successfully!"
+        echo "📋 Deployment Summary:"
+        echo "   Namespace: bedrock-chat-v2"
+        echo "   Commit: ${{ github.sha }}"
+        
+        # Get final status
+        kubectl get all -n bedrock-chat-v2 -l app=frontend
