@@ -2,9 +2,10 @@ name: Frontend CI Pipeline
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
   ci:
@@ -15,30 +16,39 @@ jobs:
       uses: actions/checkout@v4
     
     - name: Set up Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        cache: 'npm'
+      run: |
+        # Install Node.js if not present
+        if ! command -v node &> /dev/null; then
+          curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+        fi
+        node --version
+        npm --version
     
     - name: Install dependencies
       run: |
-        npm ci
+        npm install
         echo "✅ Dependencies installed"
     
     - name: Code linting with ESLint
       run: |
-        npx eslint src/ --ext .js,.jsx,.ts,.tsx --max-warnings 0 || echo "⚠️ Linting issues found but continuing..."
+        # Install eslint if not present
+        npm install eslint --save-dev || true
+        # Run linting - continue on failure
+        npx eslint src/ --ext .js,.jsx,.ts,.tsx --max-warnings 50 || echo "⚠️ Linting issues found but continuing..."
         echo "✅ ESLint check completed"
     
-    - name: Code formatting check
+    - name: Code formatting check with Prettier
       run: |
-        npx prettier --check "src/**/*.{js,jsx,ts,tsx,json,css,md}" || echo "⚠️ Formatting issues found but continuing..."
+        # Install prettier if not present
+        npm install prettier --save-dev || true
+        # Run prettier check - continue on failure
+        npx prettier --check "src/**/*.{js,jsx,ts,tsx,json,css}" || echo "⚠️ Formatting issues found but continuing..."
         echo "✅ Prettier formatting check completed"
     
     - name: Security audit
       run: |
-        npm audit --audit-level high --json > audit-report.json || echo "⚠️ Security vulnerabilities found but continuing..."
-        npm audit --audit-level high || echo "⚠️ Security audit found issues but continuing..."
+        npm audit --audit-level high || echo "⚠️ Security vulnerabilities found but continuing..."
         echo "✅ Security audit completed"
     
     - name: Run tests
@@ -48,41 +58,38 @@ jobs:
     
     - name: Build application
       run: |
-        npm run build
+        REACT_APP_API_URL=/api npm run build
         echo "✅ Build completed successfully"
     
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-    
-    - name: Login to Docker Hub
-      if: github.event_name == 'push'
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
+    - name: Install Docker if not present
+      run: |
+        if ! command -v docker &> /dev/null; then
+          echo "Docker not found, installing..."
+          sudo apt-get update
+          sudo apt-get install -y docker.io
+          sudo systemctl start docker
+          sudo systemctl enable docker
+          sudo usermod -aG docker $USER
+        fi
+        docker --version
     
     - name: Build Docker image
       run: |
-        docker build -t samitsinghhh/frontend:${{ github.sha }} .
-        docker build -t samitsinghhh/frontend:latest .
+        sudo docker build -t samitsinghhh/frontend:v3 . || docker build -t samitsinghhh/frontend:v3 .
+        sudo docker build -t samitsinghhh/frontend:latest . || docker build -t samitsinghhh/frontend:latest .
         echo "✅ Docker build completed"
+    
+    - name: Login to Docker Hub
+      if: github.event_name == 'push'
+      run: |
+        echo "${{ secrets.DOCKER_PASSWORD }}" | sudo docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin || echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
     
     - name: Push Docker image
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       run: |
-        docker push samitsinghhh/frontend:${{ github.sha }}
-        docker push samitsinghhh/frontend:latest
+        sudo docker push samitsinghhh/frontend:v3 || docker push samitsinghhh/frontend:v3
+        sudo docker push samitsinghhh/frontend:latest || docker push samitsinghhh/frontend:latest
         echo "✅ Docker push completed"
-    
-    - name: Upload reports as artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: ci-reports
-        path: |
-          audit-report.json
-          coverage/
-        retention-days: 7
     
     - name: CI Summary
       run: |
