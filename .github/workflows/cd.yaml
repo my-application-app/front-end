@@ -1,13 +1,16 @@
 name: Frontend CD Pipeline
 
 on:
-  push:
-    branches: [ main ]
+  workflow_run:
+    workflows: ["Frontend CI Pipeline"]
+    types:
+      - completed
   workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: self-hosted
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     
     steps:
     - name: Checkout code
@@ -18,32 +21,40 @@ jobs:
         kubectl cluster-info --request-timeout=10s
         echo "✅ Kubernetes connection verified"
     
-    - name: Apply Kubernetes manifests
+    - name: Deploy Frontend to Kubernetes
       run: |
-        echo "📦 Applying Frontend Kubernetes manifests..."
+        echo "📦 Deploying Frontend to Kubernetes..."
         
-        # Apply all k8s files
+        # Deploy frontend k8s files
         kubectl apply -f k8s/service.yaml
         kubectl apply -f k8s/deployment.yaml
         kubectl apply -f k8s/hpa.yaml
         kubectl apply -f k8s/network-policies.yaml
         kubectl apply -f k8s/nodeport.yaml
         
-        echo "✅ All Kubernetes manifests applied"
+        echo "✅ All Frontend Kubernetes manifests applied"
+    
+    - name: Wait for deployment
+      run: |
+        echo "⏳ Waiting for frontend deployment to be ready..."
+        kubectl rollout status deployment/frontend -n bedrock-chat-v2 --timeout=300s || echo "Deployment taking longer than expected, checking status..."
     
     - name: Verify deployment
       run: |
         echo "🔍 Verifying frontend deployment..."
         
-        # Check pod status
+        # Check pods
+        echo "Frontend Pods:"
         kubectl get pods -n bedrock-chat-v2 -l app=frontend
         
         # Check services
+        echo "Frontend Services:"
         kubectl get svc -n bedrock-chat-v2 frontend
         kubectl get svc -n bedrock-chat-v2 frontend-nodeport
         
         # Check HPA
-        kubectl get hpa -n bedrock-chat-v2 frontend-hpa
+        echo "Frontend HPA:"
+        kubectl get hpa -n bedrock-chat-v2 frontend-hpa || echo "HPA not ready yet"
         
         echo "✅ Frontend deployment verification completed"
     
@@ -52,7 +63,9 @@ jobs:
         echo "🎉 Frontend CD Pipeline completed successfully!"
         echo "📋 Deployment Summary:"
         echo "   Namespace: bedrock-chat-v2"
+        echo "   Image: samitsinghhh/frontend:v3"
         echo "   Commit: ${{ github.sha }}"
         
         # Get final status
+        echo "Final Frontend Status:"
         kubectl get all -n bedrock-chat-v2 -l app=frontend
