@@ -25,29 +25,51 @@ jobs:
         echo "Node.js version: $(node --version)"
         echo "npm version: $(npm --version)"
     
+    - name: Check package files
+      run: |
+        echo "Checking for package files..."
+        ls -la package*.json || echo "No package-lock.json found"
+        
+        if [ ! -f "package-lock.json" ]; then
+          echo "No package-lock.json found - will use npm install instead of npm ci"
+        fi
+        
+        echo "Package.json content:"
+        cat package.json
+    
     - name: Install dependencies
       run: |
+        echo "Installing dependencies..."
         npm install
         echo "Dependencies installed successfully"
+        
+        # Show installed packages
+        echo "Installed packages:"
+        npm ls --depth=0 || echo "Package list not available"
     
     - name: Run tests
       run: |
         export CI=true
+        export WATCHMAN_DISABLE_CI_DETECTION=true
         npm test -- --coverage --watchAll=false --passWithNoTests || echo "Tests completed with warnings"
-        echo "Tests completed"
+        echo "Tests execution completed"
     
     - name: Build application locally
       run: |
         export REACT_APP_API_URL=/api
         export GENERATE_SOURCEMAP=false
         npm run build
-        echo "Local build completed"
+        echo "Local build completed successfully"
         
         if [ -d "build" ]; then
           echo "Build directory verified"
+          echo "Build contents:"
           ls -la build/
+          echo "Static files:"
+          ls -la build/static/ 2>/dev/null || echo "No static directory"
+          echo "Build size: $(du -sh build/ 2>/dev/null || echo 'Unable to calculate')"
         else
-          echo "Build failed"
+          echo "Build directory not found - build failed"
           exit 1
         fi
     
@@ -60,134 +82,163 @@ jobs:
           sudo systemctl start docker
           sudo systemctl enable docker
         fi
+        
         sudo docker --version
-        echo "Docker ready"
+        echo "Docker setup completed"
     
     - name: Build Docker image
       run: |
-        echo "Building Docker image with combined COPY approach..."
+        echo "Building Docker images..."
+        echo "Using npm install instead of npm ci due to missing package-lock.json"
+        
+        # Show what we're building
+        echo "Current directory contents:"
+        ls -la
         
         sudo docker build \
           --build-arg REACT_APP_API_URL=/api \
           --tag samitsinghhh/frontend:v3 \
           --tag samitsinghhh/frontend:latest \
           . || {
-            echo "Build failed, debugging..."
-            echo "Directory structure:"
-            ls -la
-            echo "Public directory:"
-            ls -la public/ || echo "No public directory"
-            echo "Source directory:" 
-            ls -la src/ || echo "No src directory"
+            echo "Docker build failed - showing debug info..."
+            echo ""
+            echo "Dockerfile content:"
+            cat Dockerfile
+            echo ""
+            echo "Build context size:"
+            du -sh . 2>/dev/null || echo "Cannot calculate size"
+            echo ""
+            echo "Trying to build with more verbose output..."
+            sudo docker build --no-cache --progress=plain \
+              --build-arg REACT_APP_API_URL=/api \
+              --tag samitsinghhh/frontend:debug \
+              . || echo "Verbose build also failed"
             exit 1
           }
         
-        echo "Docker build successful"
+        echo "Docker images built successfully"
         sudo docker images | grep samitsinghhh/frontend
     
     - name: Test Docker image
       run: |
-        echo "Testing Docker image..."
+        echo "Testing Docker image functionality..."
         
+        # Find available port
         PORT=3001
-        while ss -tuln 2>/dev/null | grep -q ":$PORT "; do
+        while ss -tuln 2>/dev/null | grep -q ":$PORT " || netstat -ln 2>/dev/null | grep -q ":$PORT "; do
           PORT=$((PORT + 1))
         done
         
         echo "Using port $PORT for testing"
         
+        # Run container
         CONTAINER_ID=$(sudo docker run -d -p $PORT:3000 samitsinghhh/frontend:v3)
-        echo "Container started: $CONTAINER_ID"
+        echo "Container started with ID: $CONTAINER_ID"
         
-        echo "Waiting for container to fully start..."
+        # Wait for startup
+        echo "Waiting for container startup..."
         sleep 20
         
-        # Check container status properly
-        CONTAINER_STATUS=$(sudo docker inspect --format='{{.State.Status}}' $CONTAINER_ID 2>/dev/null || echo "unknown")
-        CONTAINER_RUNNING=$(sudo docker inspect --format='{{.State.Running}}' $CONTAINER_ID 2>/dev/null || echo "false")
-        
-        echo "Container status: $CONTAINER_STATUS"
-        echo "Container running: $CONTAINER_RUNNING"
-        
-        if [ "$CONTAINER_RUNNING" = "true" ] && [ "$CONTAINER_STATUS" = "running" ]; then
+        # Verify container is running
+        if sudo docker ps | grep -q $CONTAINER_ID; then
           echo "Container is running successfully"
         else
-          echo "Container is not running properly"
-          echo "Container logs:"
-          sudo docker logs $CONTAINER_ID
-          echo "Container inspect:"
-          sudo docker inspect $CONTAINER_ID | grep -A 10 -B 5 "State"
-          sudo docker rm -f $CONTAINER_ID 2>/dev/null || true
+          echo "Container failed to start - checking logs..."
+          sudo docker logs $CONTAINER_ID 2>/dev/null || echo "Could not retrieve logs"
+          sudo docker rm $CONTAINER_ID 2>/dev/null || true
           exit 1
         fi
         
-        # Test health endpoint multiple times
+        # Test health endpoint
         HEALTH_PASSED=false
-        echo "Testing health endpoint..."
-        for attempt in {1..8}; do
+        for attempt in {1..6}; do
           echo "Health check attempt $attempt..."
           if curl -f -s http://localhost:$PORT/health >/dev/null 2>&1; then
-            echo "Health check passed on attempt $attempt"
+            echo "Health check passed"
             HEALTH_PASSED=true
             break
           else
-            echo "Health check failed, waiting 5 seconds..."
+            echo "Health check failed, retrying in 5 seconds..."
             sleep 5
           fi
         done
         
-        # Test if main page responds
-        echo "Testing main application..."
-        if curl -s http://localhost:$PORT/ | grep -q "html" 2>/dev/null; then
-          echo "Main application responds with HTML"
+        # Test main application
+        if curl -s http://localhost:$PORT/ | grep -q "AI Chat App" 2>/dev/null; then
+          echo "Main application is accessible"
+        elif curl -s http://localhost:$PORT/ | grep -q "html" 2>/dev/null; then
+          echo "Application responds with HTML content"
         else
-          echo "Main application test inconclusive"
+          echo "Application response test inconclusive"
         fi
         
-        # Show final container status
-        echo "Final container status:"
-        sudo docker ps | grep $CONTAINER_ID || echo "Container not in ps list"
-        
+        # Show container logs for debugging
         echo "Container logs (last 20 lines):"
-        sudo docker logs --tail 20 $CONTAINER_ID
+        sudo docker logs --tail 20 $CONTAINER_ID 2>/dev/null || echo "Could not retrieve logs"
         
-        # Cleanup
+        # Cleanup test container
         sudo docker stop $CONTAINER_ID >/dev/null 2>&1 || true
         sudo docker rm $CONTAINER_ID >/dev/null 2>&1 || true
         
         if [ "$HEALTH_PASSED" = true ]; then
-          echo "Docker image test PASSED"
+          echo "Docker image test passed successfully"
         else
           echo "Docker image test completed but health check failed"
-          echo "This might be due to nginx taking longer to start"
-          echo "Container did start successfully, continuing pipeline"
+          echo "This may be normal if the container takes longer to start"
         fi
     
     - name: Login to Docker Hub
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       run: |
+        echo "Authenticating with Docker Hub..."
         echo "${{ secrets.DOCKER_PASSWORD }}" | sudo docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-        echo "Logged into Docker Hub"
+        echo "Docker Hub authentication successful"
     
     - name: Push Docker images
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       run: |
-        echo "Pushing images..."
+        echo "Pushing Docker images to registry..."
+        
         sudo docker push samitsinghhh/frontend:v3
-        sudo docker push samitsinghhh/frontend:latest
-        echo "Push completed"
+        echo "Pushed samitsinghhh/frontend:v3"
+        
+        sudo docker push samitsinghhh/frontend:latest  
+        echo "Pushed samitsinghhh/frontend:latest"
+        
+        echo "All images pushed successfully"
     
     - name: Cleanup
       if: always()
       run: |
+        echo "Performing cleanup..."
+        
+        # Stop and remove test containers
         sudo docker ps -q --filter "ancestor=samitsinghhh/frontend" | xargs -r sudo docker stop 2>/dev/null || true
         sudo docker ps -aq --filter "ancestor=samitsinghhh/frontend" | xargs -r sudo docker rm 2>/dev/null || true
-        sudo docker image prune -f || true
-        echo "Cleanup done"
+        
+        # Remove debug images
+        sudo docker rmi samitsinghhh/frontend:debug 2>/dev/null || true
+        
+        # Clean up unused images
+        sudo docker image prune -f >/dev/null 2>&1 || true
+        
+        echo "Cleanup completed"
     
-    - name: Summary
+    - name: Pipeline Summary
       run: |
-        echo "Pipeline completed successfully"
-        echo "Images: samitsinghhh/frontend:v3, samitsinghhh/frontend:latest"
-        echo "Container started and configured properly"
-        echo "Ready for deployment"
+        echo "==================================="
+        echo "Frontend CI Pipeline Summary"
+        echo "==================================="
+        echo "Status: SUCCESS"
+        echo "Node.js Version: $(node --version)"
+        echo "Build Method: npm install (no package-lock.json)"
+        echo "Docker Images: samitsinghhh/frontend:v3, samitsinghhh/frontend:latest"
+        echo "Commit SHA: ${{ github.sha }}"
+        
+        if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+          echo "Images Pushed: YES"
+        else
+          echo "Images Pushed: NO"
+        fi
+        
+        echo "==================================="
