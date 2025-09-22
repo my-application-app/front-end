@@ -9,7 +9,8 @@ COPY package.json ./
 RUN npm install --silent && npm cache clean --force
 
 # Copy source files maintaining proper directory structure
-COPY public/ ./public/ ./src/ ./src/
+COPY public/ ./public/
+COPY src/ ./src/
 
 # Set build arguments and environment
 ARG REACT_APP_API_URL=/api
